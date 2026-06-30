@@ -54,7 +54,7 @@ export default function ImageCard({ item, onRemove, onDone }) {
       setProcessedBlob(blob);
       setProcessedUrl(URL.createObjectURL(blob));
       setStatus('done');
-      onDone?.();
+      onDone?.(blob, `unwatermarked_${item.name.replace(/\.[^.]+$/, '') || 'image'}.png`);
     } catch (err) {
       console.error(err);
       setStatus('error');

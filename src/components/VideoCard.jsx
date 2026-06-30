@@ -69,7 +69,7 @@ export default function VideoCard({ item, onRemove, onDone }) {
       setProcessedUrl(url);
       setProgress(1);
       setStatus('done');
-      onDone?.();
+      onDone?.(result.blob, `${item.name.replace(/\.[^.]+$/, '') || 'video'}_cleaned.mp4`);
     } catch (err) {
       console.error(err);
       setStatus('error');
