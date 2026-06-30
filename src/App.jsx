@@ -171,15 +171,35 @@ export default function App() {
     setFiles(prev => [...prev, ...next]);
   };
 
+  const refundCredits = (items) => {
+    const refund = items.reduce((sum, f) =>
+      sum + (f.isVideo ? CREDIT_COST_VIDEO : CREDIT_COST_IMAGE), 0);
+    if (!refund) return;
+    setCredits(prev => {
+      const max = user ? MAX_CREDITS_USER : MAX_CREDITS_GUEST;
+      const next = {
+        remaining: Math.min(prev.remaining + refund, max),
+        used: Math.max(prev.used - refund, 0),
+        date: getTodayKey(),
+      };
+      saveCredits(user, next);
+      return next;
+    });
+  };
+
   const removeFile = (id) => {
     setFiles(prev => {
       const item = prev.find(f => f.id === id);
-      if (item?.originalUrl) URL.revokeObjectURL(item.originalUrl);
+      if (item) {
+        if (item.originalUrl) URL.revokeObjectURL(item.originalUrl);
+        refundCredits([item]);
+      }
       return prev.filter(f => f.id !== id);
     });
   };
 
   const clearAll = () => {
+    refundCredits(files);
     files.forEach(f => { if (f.originalUrl) URL.revokeObjectURL(f.originalUrl); });
     setFiles([]);
   };
