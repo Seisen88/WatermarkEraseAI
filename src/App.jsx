@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Upload, Sparkles, Globe, Moon, Sun, ChevronDown, LogOut } from 'lucide-react';
+import { Upload, Sparkles, Globe, Moon, Sun, ChevronDown, LogOut, Layers, ImageIcon, VideoIcon, AlertCircle } from 'lucide-react';
 import ImageCard from './components/ImageCard';
 import VideoCard from './components/VideoCard';
 import AuthModal from './components/AuthModal';
@@ -12,6 +12,36 @@ const LANGUAGES = [
   { code: 'zh', label: '中文' },
   { code: 'ja', label: '日本語' },
 ];
+
+const CREDIT_COST_IMAGE = 3;
+const CREDIT_COST_VIDEO = 6;
+const MAX_CREDITS_GUEST = 20;
+const MAX_CREDITS_USER = 80;
+const MAX_SIZE_IMAGE = 60 * 1024 * 1024;   // 60 MB
+const MAX_SIZE_VIDEO = 120 * 1024 * 1024;  // 120 MB
+
+function getTodayKey() {
+  return new Date().toISOString().split('T')[0];
+}
+
+function loadCredits(user) {
+  const key = user ? `we_cr_${user.id}` : 'we_cr_guest';
+  const max = user ? MAX_CREDITS_USER : MAX_CREDITS_GUEST;
+  try {
+    const s = JSON.parse(localStorage.getItem(key) || 'null');
+    if (!s || s.date !== getTodayKey()) {
+      return { remaining: max, used: 0, date: getTodayKey() };
+    }
+    return s;
+  } catch {
+    return { remaining: max, used: 0, date: getTodayKey() };
+  }
+}
+
+function saveCredits(user, cr) {
+  const key = user ? `we_cr_${user.id}` : 'we_cr_guest';
+  try { localStorage.setItem(key, JSON.stringify(cr)); } catch {}
+}
 
 export default function App() {
   const [files, setFiles] = useState([]);
@@ -26,17 +56,21 @@ export default function App() {
     try { return JSON.parse(localStorage.getItem('we_session') || 'null'); } catch { return null; }
   });
   const [userMenuOpen, setUserMenuOpen] = useState(false);
+  const [batchMode, setBatchMode] = useState(false);
+  const [credits, setCredits] = useState(() => loadCredits(
+    (() => { try { return JSON.parse(localStorage.getItem('we_session') || 'null'); } catch { return null; } })()
+  ));
+  const [uploadError, setUploadError] = useState('');
+
   const langRef = useRef(null);
   const userMenuRef = useRef(null);
   const fileInputRef = useRef(null);
 
-  // Apply dark mode to <html>
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', darkMode ? 'dark' : 'light');
     try { localStorage.setItem('theme', darkMode ? 'dark' : 'light'); } catch {}
   }, [darkMode]);
 
-  // Close dropdowns on outside click
   useEffect(() => {
     const handler = (e) => {
       if (langRef.current && !langRef.current.contains(e.target)) setLangOpen(false);
@@ -46,14 +80,29 @@ export default function App() {
     return () => document.removeEventListener('mousedown', handler);
   }, []);
 
+  useEffect(() => {
+    setCredits(loadCredits(user));
+    if (!user) setBatchMode(false);
+  }, [user]);
+
+  // Auto-clear upload error after 4s
+  useEffect(() => {
+    if (!uploadError) return;
+    const t = setTimeout(() => setUploadError(''), 4000);
+    return () => clearTimeout(t);
+  }, [uploadError]);
+
   const handleAuth = (session) => {
     setUser(session);
     setShowAuth(false);
+    setCredits(loadCredits(session));
   };
 
   const handleSignOut = () => {
     try { localStorage.removeItem('we_session'); } catch {}
     setUser(null);
+    setCredits(loadCredits(null));
+    setBatchMode(false);
     setUserMenuOpen(false);
   };
 
@@ -63,19 +112,63 @@ export default function App() {
     f.type.startsWith('image/') || /\.(png|jpg|jpeg|webp|bmp)$/i.test(f.name);
 
   const handleFiles = (incoming) => {
-    const next = Array.from(incoming)
-      .filter(f => isVideo(f) || isImage(f))
-      .map(f => ({
-        id: Date.now() + Math.random(),
-        file: f,
-        name: f.name,
-        size: f.size,
-        type: f.type,
-        isImage: isImage(f),
-        isVideo: isVideo(f),
-        originalUrl: URL.createObjectURL(f)
-      }));
-    if (next.length) setFiles(prev => [...prev, ...next]);
+    setUploadError('');
+    let candidates = Array.from(incoming).filter(f => isVideo(f) || isImage(f));
+    if (!candidates.length) return;
+
+    // Single mode: only first file
+    if (!batchMode || !user) candidates = candidates.slice(0, 1);
+
+    // Size check — filter out oversized, warn
+    const errors = [];
+    candidates = candidates.filter(f => {
+      if (isImage(f) && f.size > MAX_SIZE_IMAGE) {
+        errors.push(`"${f.name}" exceeds the 60 MB image limit.`);
+        return false;
+      }
+      if (isVideo(f) && f.size > MAX_SIZE_VIDEO) {
+        errors.push(`"${f.name}" exceeds the 120 MB video limit.`);
+        return false;
+      }
+      return true;
+    });
+    if (errors.length) { setUploadError(errors[0]); }
+    if (!candidates.length) return;
+
+    // Credit check
+    const cost = candidates.reduce((sum, f) =>
+      sum + (isVideo(f) ? CREDIT_COST_VIDEO : CREDIT_COST_IMAGE), 0);
+
+    if (cost > credits.remaining) {
+      const max = user ? MAX_CREDITS_USER : MAX_CREDITS_GUEST;
+      setUploadError(
+        credits.remaining === 0
+          ? 'You\'ve used all your credits for today. They reset at midnight.'
+          : `Not enough credits — need ${cost}, you have ${credits.remaining} remaining.`
+      );
+      return;
+    }
+
+    // Deduct credits
+    const newCredits = {
+      remaining: credits.remaining - cost,
+      used: credits.used + cost,
+      date: getTodayKey(),
+    };
+    setCredits(newCredits);
+    saveCredits(user, newCredits);
+
+    const next = candidates.map(f => ({
+      id: Date.now() + Math.random(),
+      file: f,
+      name: f.name,
+      size: f.size,
+      type: f.type,
+      isImage: isImage(f),
+      isVideo: isVideo(f),
+      originalUrl: URL.createObjectURL(f),
+    }));
+    setFiles(prev => [...prev, ...next]);
   };
 
   const removeFile = (id) => {
@@ -116,11 +209,13 @@ export default function App() {
   useEffect(() => {
     window.addEventListener('paste', handlePaste);
     return () => window.removeEventListener('paste', handlePaste);
-  }, []);
+  }, [credits, batchMode, user]);
 
   const videoCount = files.filter(f => f.isVideo).length;
   const imageCount = files.filter(f => f.isImage).length;
   const currentLang = LANGUAGES.find(l => l.code === lang) || LANGUAGES[0];
+  const maxCredits = user ? MAX_CREDITS_USER : MAX_CREDITS_GUEST;
+  const creditPct = Math.max(0, (credits.remaining / maxCredits) * 100);
 
   return (
     <div className="app-container" onDragEnter={handleDrag} onDragOver={handleDrag}>
@@ -143,25 +238,14 @@ export default function App() {
 
       <header className="main-header">
         <div className="header-container">
-          {/* Brand */}
-          <a
-            href="#"
-            className="brand"
-            onClick={(e) => { e.preventDefault(); clearAll(); }}
-          >
+          <a href="#" className="brand" onClick={(e) => { e.preventDefault(); clearAll(); }}>
             <Sparkles fill="currentColor" />
             <span>WatermarkErase<span>AI</span></span>
           </a>
 
-          {/* Nav right */}
           <div className="nav-right">
-            {/* Language picker */}
             <div className="nav-lang-wrap" ref={langRef}>
-              <button
-                className="nav-lang-btn"
-                onClick={() => setLangOpen(o => !o)}
-                aria-label="Select language"
-              >
+              <button className="nav-lang-btn" onClick={() => setLangOpen(o => !o)} aria-label="Select language">
                 <Globe size={14} />
                 <span>{currentLang.label}</span>
                 <ChevronDown size={12} className={langOpen ? 'chevron-open' : ''} />
@@ -181,28 +265,20 @@ export default function App() {
               )}
             </div>
 
-            {/* Dark mode toggle */}
             <button
               className="nav-icon-btn"
               onClick={() => setDarkMode(d => !d)}
               aria-label={darkMode ? 'Switch to light mode' : 'Switch to dark mode'}
-              title={darkMode ? 'Light mode' : 'Dark mode'}
             >
               {darkMode ? <Sun size={16} /> : <Moon size={16} />}
             </button>
 
-            {/* User / Sign In */}
             {user ? (
               <div className="nav-user-wrap" ref={userMenuRef}>
-                <button
-                  className="nav-avatar-btn"
-                  onClick={() => setUserMenuOpen(o => !o)}
-                  aria-label="User menu"
-                >
+                <button className="nav-avatar-btn" onClick={() => setUserMenuOpen(o => !o)}>
                   {user.picture
                     ? <img src={user.picture} className="nav-avatar-img" alt={user.name} referrerPolicy="no-referrer" />
-                    : <span className="nav-avatar">{user.avatar}</span>
-                  }
+                    : <span className="nav-avatar">{user.avatar}</span>}
                   <span className="nav-user-name">{user.name.split(' ')[0]}</span>
                   <ChevronDown size={12} className={userMenuOpen ? 'chevron-open' : ''} />
                 </button>
@@ -220,9 +296,7 @@ export default function App() {
                 )}
               </div>
             ) : (
-              <button className="nav-signin" onClick={() => setShowAuth(true)}>
-                Sign In
-              </button>
+              <button className="nav-signin" onClick={() => setShowAuth(true)}>Sign In</button>
             )}
           </div>
         </div>
@@ -238,9 +312,82 @@ export default function App() {
           </p>
         </div>
 
+        {/* ── Mode + Quota Controls ── */}
+        <div className="upload-controls">
+          {/* Mode bar */}
+          <div className="mode-bar">
+            <div className="mode-pills">
+              <button
+                className={`mode-pill${!batchMode ? ' active' : ''}`}
+                onClick={() => setBatchMode(false)}
+              >
+                <ImageIcon size={12} />
+                Single
+              </button>
+              <button
+                className={`mode-pill${batchMode ? ' active' : ''}${!user ? ' locked' : ''}`}
+                onClick={() => user ? setBatchMode(true) : setShowAuth(true)}
+              >
+                <Layers size={12} />
+                {user
+                  ? 'Batch'
+                  : <><span>Batch</span><span className="mode-lock-text"> — sign in to unlock</span></>
+                }
+              </button>
+            </div>
+            <div className="mode-meta">
+              <span className="mode-size-info">Images 60 MB · MP4 120 MB</span>
+              <span className="credit-tag">
+                <ImageIcon size={11} /> Image — {CREDIT_COST_IMAGE} credits
+              </span>
+              <span className="credit-tag">
+                <VideoIcon size={11} /> Video — {CREDIT_COST_VIDEO} credits
+              </span>
+            </div>
+          </div>
+
+          {/* Quota bar */}
+          <div className="quota-bar">
+            <div className="quota-top">
+              <span className="quota-text">
+                <span className="quota-label">{user ? 'Account' : 'Guest'} quota:</span>
+                {' '}<strong>{maxCredits}</strong> / day
+                <span className="quota-sep">·</span>
+                Used <strong>{credits.used}</strong>
+                <span className="quota-sep">·</span>
+                Remaining{' '}
+                <strong className={credits.remaining === 0 ? 'quota-zero' : credits.remaining <= 5 ? 'quota-low' : 'quota-ok'}>
+                  {credits.remaining}
+                </strong>
+              </span>
+              {!user && (
+                <button className="quota-signin-btn" onClick={() => setShowAuth(true)}>
+                  Sign in
+                </button>
+              )}
+            </div>
+            <div className="quota-progress">
+              <div className="quota-progress-fill" style={{ width: `${creditPct}%` }} />
+            </div>
+            {!user && (
+              <p className="quota-hint">
+                Sign in to remove watermarks from more images and videos and unlock bulk processing &amp; downloads.
+              </p>
+            )}
+          </div>
+
+          {/* Upload error */}
+          {uploadError && (
+            <div className="upload-error-bar">
+              <AlertCircle size={13} />
+              <span>{uploadError}</span>
+            </div>
+          )}
+        </div>
+
         {/* Upload Zone */}
         <div
-          className={`uploader-box ${dragActive ? 'dragging' : ''}`}
+          className={`uploader-box${dragActive ? ' dragging' : ''}`}
           onClick={() => fileInputRef.current?.click()}
           onDragEnter={handleDrag}
           onDragOver={handleDrag}
@@ -251,7 +398,7 @@ export default function App() {
             <Upload size={22} />
           </div>
           <h3>Drop images/videos here</h3>
-          <p>or click to browse files &nbsp;·&nbsp; paste (Ctrl+V)</p>
+          <p>or click to browse &nbsp;·&nbsp; paste (Ctrl+V)</p>
           <div className="uploader-formats">
             <span>PNG</span><span>JPG</span><span>WebP</span><span>BMP</span><span>MP4</span>
           </div>
@@ -262,7 +409,7 @@ export default function App() {
             ref={fileInputRef}
             type="file"
             accept="image/*,video/*"
-            multiple
+            multiple={batchMode && !!user}
             onChange={e => handleFiles(e.target.files)}
             style={{ display: 'none' }}
           />
@@ -274,19 +421,14 @@ export default function App() {
             <div className="files-section-header">
               <div style={{ display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap' }}>
                 {imageCount > 0 && (
-                  <span className="files-count">
-                    {imageCount} image{imageCount !== 1 ? 's' : ''}
-                  </span>
+                  <span className="files-count">{imageCount} image{imageCount !== 1 ? 's' : ''}</span>
                 )}
                 {videoCount > 0 && (
-                  <span className="files-count">
-                    {videoCount} video{videoCount !== 1 ? 's' : ''}
-                  </span>
+                  <span className="files-count">{videoCount} video{videoCount !== 1 ? 's' : ''}</span>
                 )}
               </div>
               <button className="clear-btn" onClick={clearAll}>Clear All</button>
             </div>
-
             <div className="files-grid">
               {files.map(f =>
                 f.isImage
