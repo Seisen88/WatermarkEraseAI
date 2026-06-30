@@ -14,7 +14,7 @@ import {
 } from '../video/videoExport.js';
 import { resolveAllenkFdncnnRuntimeProfile } from '../video/videoDenoiseRuntimePolicy.js';
 
-export default function VideoCard({ item, onRemove }) {
+export default function VideoCard({ item, onRemove, onDone }) {
   const [status, setStatus] = useState('processing');
   const [progress, setProgress] = useState(0);
   const [progressText, setProgressText] = useState('Scanning…');
@@ -69,6 +69,7 @@ export default function VideoCard({ item, onRemove }) {
       setProcessedUrl(url);
       setProgress(1);
       setStatus('done');
+      onDone?.();
     } catch (err) {
       console.error(err);
       setStatus('error');

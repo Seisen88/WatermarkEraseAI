@@ -171,9 +171,14 @@ export default function App() {
     setFiles(prev => [...prev, ...next]);
   };
 
+  const markDone = (id) => {
+    setFiles(prev => prev.map(f => f.id === id ? { ...f, processed: true } : f));
+  };
+
   const refundCredits = (items) => {
-    const refund = items.reduce((sum, f) =>
-      sum + (f.isVideo ? CREDIT_COST_VIDEO : CREDIT_COST_IMAGE), 0);
+    const refund = items
+      .filter(f => !f.processed)
+      .reduce((sum, f) => sum + (f.isVideo ? CREDIT_COST_VIDEO : CREDIT_COST_IMAGE), 0);
     if (!refund) return;
     setCredits(prev => {
       const max = user ? MAX_CREDITS_USER : MAX_CREDITS_GUEST;
@@ -452,8 +457,8 @@ export default function App() {
             <div className="files-grid">
               {files.map(f =>
                 f.isImage
-                  ? <ImageCard key={f.id} item={f} onRemove={() => removeFile(f.id)} />
-                  : <VideoCard key={f.id} item={f} onRemove={() => removeFile(f.id)} />
+                  ? <ImageCard key={f.id} item={f} onRemove={() => removeFile(f.id)} onDone={() => markDone(f.id)} />
+                  : <VideoCard key={f.id} item={f} onRemove={() => removeFile(f.id)} onDone={() => markDone(f.id)} />
               )}
             </div>
           </div>

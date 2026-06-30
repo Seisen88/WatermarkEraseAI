@@ -3,7 +3,7 @@ import { Download, X, ImageIcon } from 'lucide-react';
 import { WatermarkEngine } from '../core/watermarkEngine.js';
 import { canvasToBlob } from '../core/canvasBlob.js';
 
-export default function ImageCard({ item, onRemove }) {
+export default function ImageCard({ item, onRemove, onDone }) {
   const [status, setStatus] = useState('processing');
   const [processedUrl, setProcessedUrl] = useState(null);
   const [processedBlob, setProcessedBlob] = useState(null);
@@ -54,6 +54,7 @@ export default function ImageCard({ item, onRemove }) {
       setProcessedBlob(blob);
       setProcessedUrl(URL.createObjectURL(blob));
       setStatus('done');
+      onDone?.();
     } catch (err) {
       console.error(err);
       setStatus('error');
