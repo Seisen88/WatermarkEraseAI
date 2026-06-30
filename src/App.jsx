@@ -203,6 +203,26 @@ const MAX_CREDITS_USER = 80;
 const MAX_SIZE_IMAGE = 60 * 1024 * 1024;
 const MAX_SIZE_VIDEO = 120 * 1024 * 1024;
 
+// In local dev, Vercel serverless functions aren't available — use localStorage instead
+const IS_DEV = import.meta.env.DEV;
+
+function getTodayKey() { return new Date().toISOString().split('T')[0]; }
+
+function localLoad(user) {
+  const key = user ? `we_cr_${user.id}` : 'we_cr_guest';
+  const max = user ? MAX_CREDITS_USER : MAX_CREDITS_GUEST;
+  try {
+    const s = JSON.parse(localStorage.getItem(key) || 'null');
+    if (!s || s.date !== getTodayKey()) return { remaining: max, used: 0 };
+    return s;
+  } catch { return { remaining: max, used: 0 }; }
+}
+
+function localSave(user, cr) {
+  const key = user ? `we_cr_${user.id}` : 'we_cr_guest';
+  try { localStorage.setItem(key, JSON.stringify({ ...cr, date: getTodayKey() })); } catch {}
+}
+
 function creditHeaders(user) {
   const h = { 'Content-Type': 'application/json' };
   if (user?.id) h['x-user-id'] = String(user.id);
@@ -249,16 +269,28 @@ export default function App() {
   }, []);
 
   const fetchCredits = async (u) => {
+    if (IS_DEV) { setCredits(localLoad(u)); return; }
     try {
       const res = await fetch('/api/credits', { headers: creditHeaders(u) });
       if (res.ok) setCredits(await res.json());
     } catch {
-      const max = u ? MAX_CREDITS_USER : MAX_CREDITS_GUEST;
-      setCredits({ remaining: max, used: 0 });
+      setCredits(localLoad(u));
     }
   };
 
   const callDeduct = async (cost) => {
+    if (IS_DEV) {
+      const cur = localLoad(user);
+      if (cost > cur.remaining) throw new Error(
+        cur.remaining === 0
+          ? 'You\'ve used all your credits for today. They reset at midnight.'
+          : `Not enough credits — need ${cost}, you have ${cur.remaining} remaining.`
+      );
+      const next = { remaining: cur.remaining - cost, used: cur.used + cost };
+      localSave(user, next);
+      setCredits(next);
+      return next;
+    }
     const res = await fetch('/api/credits', {
       method: 'POST',
       headers: creditHeaders(user),
@@ -271,6 +303,14 @@ export default function App() {
   };
 
   const callRefund = async (cost) => {
+    if (IS_DEV) {
+      const cur = localLoad(user);
+      const max = user ? MAX_CREDITS_USER : MAX_CREDITS_GUEST;
+      const next = { remaining: Math.min(cur.remaining + cost, max), used: Math.max(cur.used - cost, 0) };
+      localSave(user, next);
+      setCredits(next);
+      return;
+    }
     try {
       const res = await fetch('/api/credits', {
         method: 'POST',
