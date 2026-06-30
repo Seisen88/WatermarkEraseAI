@@ -1,30 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { X, Mail, Lock, User, Eye, EyeOff, Sparkles, AlertCircle, ArrowLeft, CheckCircle } from 'lucide-react';
+import { X, Mail, Lock, User, Eye, EyeOff, Sparkles, AlertCircle } from 'lucide-react';
 
 const GOOGLE_CLIENT_ID = '617067144053-qlbuu7secchcttqs2ouhv22l1d2psvi1.apps.googleusercontent.com';
 
 const isGmail = (email) => /^[^\s@]+@gmail\.com$/i.test(email.trim());
 
-function generateOTP() {
-  return String(Math.floor(100000 + Math.random() * 900000));
-}
-
-async function sendOTPEmail(toEmail, toName, otp) {
-  const res = await fetch('/api/send-otp', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email: toEmail, name: toName, otp }),
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.error || 'Failed to send OTP');
-  }
-}
-
 export default function AuthModal({ onClose, onAuth }) {
   const [tab, setTab] = useState('signin');
-  // sign-up step: 'form' | 'otp' | 'done'
-  const [step, setStep] = useState('form');
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -32,16 +14,6 @@ export default function AuthModal({ onClose, onAuth }) {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [googleLoading, setGoogleLoading] = useState(false);
-
-  // OTP state
-  const [otpDigits, setOtpDigits] = useState(['', '', '', '', '', '']);
-  const [otpSent, setOtpSent] = useState(false);
-  const [otpSecret, setOtpSecret] = useState('');
-  const [otpResendCooldown, setOtpResendCooldown] = useState(0);
-  const [pendingUser, setPendingUser] = useState(null);
-  const otpRefs = useRef([]);
-  const cooldownRef = useRef(null);
-
   const backdropRef = useRef(null);
   const tokenClientRef = useRef(null);
 
@@ -128,60 +100,7 @@ export default function AuthModal({ onClose, onAuth }) {
     return null;
   };
 
-  const startCooldown = (seconds = 60) => {
-    setOtpResendCooldown(seconds);
-    clearInterval(cooldownRef.current);
-    cooldownRef.current = setInterval(() => {
-      setOtpResendCooldown(prev => {
-        if (prev <= 1) { clearInterval(cooldownRef.current); return 0; }
-        return prev - 1;
-      });
-    }, 1000);
-  };
-
-  const doSendOTP = async (toEmail, toName, otp) => {
-    await sendOTPEmail(toEmail, toName, otp);
-  };
-
-  // Sign-up: validate form → send OTP → show OTP screen
-  const handleSignupSubmit = async (e) => {
-    e.preventDefault();
-    setError('');
-    const err = validate();
-    if (err) { setError(err); return; }
-
-    const accounts = getAccounts();
-    const exists = accounts.find(a => a.email === email.trim().toLowerCase());
-    if (exists) { setError('An account with this Gmail already exists.'); return; }
-
-    setLoading(true);
-    const otp = generateOTP();
-    setOtpSecret(otp);
-    try {
-      await doSendOTP(email.trim(), name.trim(), otp);
-      setPendingUser({
-        id: Date.now(),
-        name: name.trim(),
-        email: email.trim().toLowerCase(),
-        password,
-        avatar: name.trim()[0].toUpperCase(),
-        picture: null,
-        googleAuth: false,
-      });
-      setOtpDigits(['', '', '', '', '', '']);
-      setStep('otp');
-      startCooldown(60);
-      setTimeout(() => otpRefs.current[0]?.focus(), 80);
-    } catch (err2) {
-      console.error(err2);
-      setError('Could not send verification email. Please try again.');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // Sign-in: direct
-  const handleSigninSubmit = (e) => {
+  const handleSubmit = (e) => {
     e.preventDefault();
     setError('');
     const err = validate();
@@ -190,188 +109,43 @@ export default function AuthModal({ onClose, onAuth }) {
 
     setTimeout(() => {
       const accounts = getAccounts();
-      const user = accounts.find(a => a.email === email.trim().toLowerCase());
-      if (!user) { setError('No account found with this Gmail address.'); setLoading(false); return; }
-      if (user.googleAuth) { setError('This account uses Google sign-in. Use the button above.'); setLoading(false); return; }
-      if (user.password !== password) { setError('Incorrect password.'); setLoading(false); return; }
-      const session = { id: user.id, name: user.name, email: user.email, avatar: user.avatar, picture: null };
-      try { localStorage.setItem('we_session', JSON.stringify(session)); } catch {}
-      onAuth(session);
-      setLoading(false);
-    }, 300);
-  };
-
-  const handleSubmit = tab === 'signup' ? handleSignupSubmit : handleSigninSubmit;
-
-  // OTP digit input handling
-  const handleOtpChange = (idx, val) => {
-    const digit = val.replace(/\D/g, '').slice(-1);
-    const next = [...otpDigits];
-    next[idx] = digit;
-    setOtpDigits(next);
-    if (digit && idx < 5) {
-      otpRefs.current[idx + 1]?.focus();
-    }
-  };
-
-  const handleOtpKeyDown = (idx, e) => {
-    if (e.key === 'Backspace') {
-      if (otpDigits[idx]) {
-        const next = [...otpDigits];
-        next[idx] = '';
-        setOtpDigits(next);
-      } else if (idx > 0) {
-        otpRefs.current[idx - 1]?.focus();
+      if (tab === 'signup') {
+        const exists = accounts.find(a => a.email === email.trim().toLowerCase());
+        if (exists) { setError('An account with this Gmail already exists.'); setLoading(false); return; }
+        const user = {
+          id: Date.now(),
+          name: name.trim(),
+          email: email.trim().toLowerCase(),
+          password,
+          avatar: name.trim()[0].toUpperCase(),
+          picture: null,
+          googleAuth: false,
+        };
+        saveAccounts([...accounts, user]);
+        const session = { id: user.id, name: user.name, email: user.email, avatar: user.avatar, picture: null };
+        try { localStorage.setItem('we_session', JSON.stringify(session)); } catch {}
+        onAuth(session);
+      } else {
+        const user = accounts.find(a => a.email === email.trim().toLowerCase());
+        if (!user) { setError('No account found with this Gmail address.'); setLoading(false); return; }
+        if (user.googleAuth) { setError('This account uses Google sign-in. Use the button above.'); setLoading(false); return; }
+        if (user.password !== password) { setError('Incorrect password.'); setLoading(false); return; }
+        const session = { id: user.id, name: user.name, email: user.email, avatar: user.avatar, picture: null };
+        try { localStorage.setItem('we_session', JSON.stringify(session)); } catch {}
+        onAuth(session);
       }
-    } else if (e.key === 'ArrowLeft' && idx > 0) {
-      otpRefs.current[idx - 1]?.focus();
-    } else if (e.key === 'ArrowRight' && idx < 5) {
-      otpRefs.current[idx + 1]?.focus();
-    }
-  };
-
-  const handleOtpPaste = (e) => {
-    e.preventDefault();
-    const pasted = e.clipboardData.getData('text').replace(/\D/g, '').slice(0, 6);
-    const next = ['', '', '', '', '', ''];
-    for (let i = 0; i < pasted.length; i++) next[i] = pasted[i];
-    setOtpDigits(next);
-    const focusIdx = Math.min(pasted.length, 5);
-    otpRefs.current[focusIdx]?.focus();
-  };
-
-  const handleOtpVerify = (e) => {
-    e.preventDefault();
-    setError('');
-    const entered = otpDigits.join('');
-    if (entered.length < 6) { setError('Please enter the full 6-digit code.'); return; }
-
-    if (entered !== otpSecret) {
-      setError('Incorrect verification code. Please try again.');
-      return;
-    }
-
-    // OTP correct — create account
-    const accounts = getAccounts();
-    saveAccounts([...accounts, pendingUser]);
-    const session = { id: pendingUser.id, name: pendingUser.name, email: pendingUser.email, avatar: pendingUser.avatar, picture: null };
-    try { localStorage.setItem('we_session', JSON.stringify(session)); } catch {}
-    setStep('done');
-    setTimeout(() => onAuth(session), 900);
-  };
-
-  const handleResendOTP = async () => {
-    if (otpResendCooldown > 0 || !pendingUser) return;
-    setError('');
-    const otp = generateOTP();
-    setOtpSecret(otp);
-    setOtpDigits(['', '', '', '', '', '']);
-    try {
-      await doSendOTP(pendingUser.email, pendingUser.name, otp);
-      startCooldown(60);
-      setTimeout(() => otpRefs.current[0]?.focus(), 60);
-    } catch {
-      setError('Could not resend code. Please try again.');
-    }
+      setLoading(false);
+    }, 350);
   };
 
   const switchTab = (t) => {
     setTab(t);
-    setStep('form');
     setError('');
     setName('');
     setEmail('');
     setPassword('');
-    setOtpDigits(['', '', '', '', '', '']);
-    setPendingUser(null);
   };
 
-  // ── OTP verification screen ──
-  if (step === 'otp' || step === 'done') {
-    return (
-      <div
-        className="auth-backdrop"
-        ref={backdropRef}
-        onClick={(e) => { if (e.target === backdropRef.current) onClose(); }}
-      >
-        <div className="auth-modal">
-          <button className="auth-close" onClick={onClose} aria-label="Close"><X size={16} /></button>
-
-          {step === 'done' ? (
-            <div className="otp-success">
-              <div className="otp-success-icon">
-                <CheckCircle size={36} />
-              </div>
-              <h2 className="auth-title" style={{ textAlign: 'center' }}>Account created!</h2>
-              <p className="auth-subtitle" style={{ textAlign: 'center' }}>
-                Welcome to WatermarkEraseAI. Signing you in…
-              </p>
-            </div>
-          ) : (
-            <>
-              <button
-                className="otp-back-btn"
-                onClick={() => { setStep('form'); setError(''); }}
-                type="button"
-              >
-                <ArrowLeft size={14} /> Back
-              </button>
-
-              <div className="otp-icon">
-                <Mail size={28} />
-              </div>
-              <h2 className="auth-title">Check your Gmail</h2>
-              <p className="auth-subtitle">
-                We sent a 6-digit code to <strong>{pendingUser?.email}</strong>. Enter it below to verify your account.
-              </p>
-
-              <form className="auth-form" onSubmit={handleOtpVerify} noValidate>
-                <div className="otp-digits-row">
-                  {otpDigits.map((d, i) => (
-                    <input
-                      key={i}
-                      ref={el => (otpRefs.current[i] = el)}
-                      type="text"
-                      inputMode="numeric"
-                      maxLength={1}
-                      value={d}
-                      className={`otp-digit${d ? ' filled' : ''}`}
-                      onChange={e => handleOtpChange(i, e.target.value)}
-                      onKeyDown={e => handleOtpKeyDown(i, e)}
-                      onPaste={i === 0 ? handleOtpPaste : undefined}
-                      autoFocus={i === 0}
-                    />
-                  ))}
-                </div>
-
-                {error && (
-                  <div className="auth-error">
-                    <AlertCircle size={13} />
-                    <span>{error}</span>
-                  </div>
-                )}
-
-                <button type="submit" className="auth-submit">
-                  Verify &amp; Create Account
-                </button>
-              </form>
-
-              <p className="otp-resend">
-                Didn't receive it?{' '}
-                {otpResendCooldown > 0
-                  ? <span className="otp-resend-timer">Resend in {otpResendCooldown}s</span>
-                  : <button type="button" className="otp-resend-btn" onClick={handleResendOTP}>Resend code</button>
-                }
-              </p>
-
-            </>
-          )}
-        </div>
-      </div>
-    );
-  }
-
-  // ── Main sign-in / sign-up screen ──
   return (
     <div
       className="auth-backdrop"
@@ -405,9 +179,7 @@ export default function AuthModal({ onClose, onAuth }) {
           disabled={googleLoading}
           type="button"
         >
-          {googleLoading
-            ? <span className="auth-spinner google-spinner" />
-            : <GoogleSVG />}
+          {googleLoading ? <span className="auth-spinner google-spinner" /> : <GoogleSVG />}
           <span>{googleLoading ? 'Connecting…' : 'Continue with Google'}</span>
         </button>
 
@@ -489,9 +261,7 @@ export default function AuthModal({ onClose, onAuth }) {
 
           <button type="submit" className="auth-submit" disabled={loading}>
             {loading && <span className="auth-spinner" />}
-            {loading
-              ? (tab === 'signup' ? 'Sending code…' : 'Signing in…')
-              : (tab === 'signin' ? 'Sign In' : 'Create Account')}
+            {loading ? 'Please wait…' : tab === 'signin' ? 'Sign In' : 'Create Account'}
           </button>
         </form>
 
