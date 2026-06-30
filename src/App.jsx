@@ -20,27 +20,10 @@ const MAX_CREDITS_USER = 80;
 const MAX_SIZE_IMAGE = 60 * 1024 * 1024;   // 60 MB
 const MAX_SIZE_VIDEO = 120 * 1024 * 1024;  // 120 MB
 
-function getTodayKey() {
-  return new Date().toISOString().split('T')[0];
-}
-
-function loadCredits(user) {
-  const key = user ? `we_cr_${user.id}` : 'we_cr_guest';
-  const max = user ? MAX_CREDITS_USER : MAX_CREDITS_GUEST;
-  try {
-    const s = JSON.parse(localStorage.getItem(key) || 'null');
-    if (!s || s.date !== getTodayKey()) {
-      return { remaining: max, used: 0, date: getTodayKey() };
-    }
-    return s;
-  } catch {
-    return { remaining: max, used: 0, date: getTodayKey() };
-  }
-}
-
-function saveCredits(user, cr) {
-  const key = user ? `we_cr_${user.id}` : 'we_cr_guest';
-  try { localStorage.setItem(key, JSON.stringify(cr)); } catch {}
+function creditHeaders(user) {
+  const h = { 'Content-Type': 'application/json' };
+  if (user?.id) h['x-user-id'] = String(user.id);
+  return h;
 }
 
 export default function App() {
@@ -57,9 +40,7 @@ export default function App() {
   });
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [batchMode, setBatchMode] = useState(false);
-  const [credits, setCredits] = useState(() => loadCredits(
-    (() => { try { return JSON.parse(localStorage.getItem('we_session') || 'null'); } catch { return null; } })()
-  ));
+  const [credits, setCredits] = useState({ remaining: null, used: 0 });
   const [uploadError, setUploadError] = useState('');
 
   const langRef = useRef(null);
@@ -80,8 +61,42 @@ export default function App() {
     return () => document.removeEventListener('mousedown', handler);
   }, []);
 
+  const fetchCredits = async (u) => {
+    try {
+      const res = await fetch('/api/credits', { headers: creditHeaders(u) });
+      if (res.ok) setCredits(await res.json());
+    } catch {
+      // API unavailable — fall back to max so app still works
+      const max = u ? MAX_CREDITS_USER : MAX_CREDITS_GUEST;
+      setCredits({ remaining: max, used: 0 });
+    }
+  };
+
+  const callDeduct = async (cost) => {
+    const res = await fetch('/api/credits', {
+      method: 'POST',
+      headers: creditHeaders(user),
+      body: JSON.stringify({ action: 'deduct', cost }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Not enough credits.');
+    setCredits(data);
+    return data;
+  };
+
+  const callRefund = async (cost) => {
+    try {
+      const res = await fetch('/api/credits', {
+        method: 'POST',
+        headers: creditHeaders(user),
+        body: JSON.stringify({ action: 'refund', cost }),
+      });
+      if (res.ok) setCredits(await res.json());
+    } catch { /* silent */ }
+  };
+
   useEffect(() => {
-    setCredits(loadCredits(user));
+    fetchCredits(user);
     if (!user) setBatchMode(false);
   }, [user]);
 
@@ -95,13 +110,13 @@ export default function App() {
   const handleAuth = (session) => {
     setUser(session);
     setShowAuth(false);
-    setCredits(loadCredits(session));
+    fetchCredits(session);
   };
 
   const handleSignOut = () => {
     try { localStorage.removeItem('we_session'); } catch {}
     setUser(null);
-    setCredits(loadCredits(null));
+    fetchCredits(null);
     setBatchMode(false);
     setUserMenuOpen(false);
   };
@@ -111,7 +126,7 @@ export default function App() {
   const isImage = (f) =>
     f.type.startsWith('image/') || /\.(png|jpg|jpeg|webp|bmp)$/i.test(f.name);
 
-  const handleFiles = (incoming) => {
+  const handleFiles = async (incoming) => {
     setUploadError('');
     let candidates = Array.from(incoming).filter(f => isVideo(f) || isImage(f));
     if (!candidates.length) return;
@@ -132,31 +147,19 @@ export default function App() {
       }
       return true;
     });
-    if (errors.length) { setUploadError(errors[0]); }
+    if (errors.length) setUploadError(errors[0]);
     if (!candidates.length) return;
 
-    // Credit check
     const cost = candidates.reduce((sum, f) =>
       sum + (isVideo(f) ? CREDIT_COST_VIDEO : CREDIT_COST_IMAGE), 0);
 
-    if (cost > credits.remaining) {
-      const max = user ? MAX_CREDITS_USER : MAX_CREDITS_GUEST;
-      setUploadError(
-        credits.remaining === 0
-          ? 'You\'ve used all your credits for today. They reset at midnight.'
-          : `Not enough credits — need ${cost}, you have ${credits.remaining} remaining.`
-      );
+    // Deduct credits server-side — server is authoritative
+    try {
+      await callDeduct(cost);
+    } catch (err) {
+      setUploadError(err.message);
       return;
     }
-
-    // Deduct credits
-    const newCredits = {
-      remaining: credits.remaining - cost,
-      used: credits.used + cost,
-      date: getTodayKey(),
-    };
-    setCredits(newCredits);
-    saveCredits(user, newCredits);
 
     const next = candidates.map(f => ({
       id: Date.now() + Math.random(),
@@ -176,20 +179,10 @@ export default function App() {
   };
 
   const refundCredits = (items) => {
-    const refund = items
+    const cost = items
       .filter(f => !f.processed)
       .reduce((sum, f) => sum + (f.isVideo ? CREDIT_COST_VIDEO : CREDIT_COST_IMAGE), 0);
-    if (!refund) return;
-    setCredits(prev => {
-      const max = user ? MAX_CREDITS_USER : MAX_CREDITS_GUEST;
-      const next = {
-        remaining: Math.min(prev.remaining + refund, max),
-        used: Math.max(prev.used - refund, 0),
-        date: getTodayKey(),
-      };
-      saveCredits(user, next);
-      return next;
-    });
+    if (cost) callRefund(cost);
   };
 
   const removeFile = (id) => {
@@ -234,13 +227,14 @@ export default function App() {
   useEffect(() => {
     window.addEventListener('paste', handlePaste);
     return () => window.removeEventListener('paste', handlePaste);
-  }, [credits, batchMode, user]);
+  }, [batchMode, user]);
 
   const videoCount = files.filter(f => f.isVideo).length;
   const imageCount = files.filter(f => f.isImage).length;
   const currentLang = LANGUAGES.find(l => l.code === lang) || LANGUAGES[0];
   const maxCredits = user ? MAX_CREDITS_USER : MAX_CREDITS_GUEST;
-  const creditPct = Math.max(0, (credits.remaining / maxCredits) * 100);
+  const creditsLoaded = credits.remaining !== null;
+  const creditPct = creditsLoaded ? Math.max(0, (credits.remaining / maxCredits) * 100) : 100;
 
   return (
     <div className="app-container" onDragEnter={handleDrag} onDragOver={handleDrag}>
@@ -378,11 +372,11 @@ export default function App() {
                 <span className="quota-label">{user ? 'Account' : 'Guest'} quota:</span>
                 {' '}<strong>{maxCredits}</strong> / day
                 <span className="quota-sep">·</span>
-                Used <strong>{credits.used}</strong>
+                Used <strong>{creditsLoaded ? credits.used : '…'}</strong>
                 <span className="quota-sep">·</span>
                 Remaining{' '}
-                <strong className={credits.remaining === 0 ? 'quota-zero' : credits.remaining <= 5 ? 'quota-low' : 'quota-ok'}>
-                  {credits.remaining}
+                <strong className={!creditsLoaded ? '' : credits.remaining === 0 ? 'quota-zero' : credits.remaining <= 5 ? 'quota-low' : 'quota-ok'}>
+                  {creditsLoaded ? credits.remaining : '…'}
                 </strong>
               </span>
               {!user && (
